@@ -1,0 +1,53 @@
+diff --git a/trellis2/modules/image_feature_extractor.py b/trellis2/modules/image_feature_extractor.py
+index c3cb515..12a65d3 100644
+--- a/trellis2/modules/image_feature_extractor.py
++++ b/trellis2/modules/image_feature_extractor.py
+@@ -83,7 +83,9 @@ class DinoV3FeatureExtractor:
+         hidden_states = self.model.embeddings(image, bool_masked_pos=None)
+         position_embeddings = self.model.rope_embeddings(image)
+ 
+-        for i, layer_module in enumerate(self.model.layer):
++        # transformers >= 5 moved the layers to self.model.model.layer
++        layers = self.model.layer if hasattr(self.model, 'layer') else self.model.model.layer
++        for i, layer_module in enumerate(layers):
+             hidden_states = layer_module(
+                 hidden_states,
+                 position_embeddings=position_embeddings,
+diff --git a/trellis2/pipelines/trellis2_image_to_3d.py b/trellis2/pipelines/trellis2_image_to_3d.py
+index a7b84b9..c4ca787 100644
+--- a/trellis2/pipelines/trellis2_image_to_3d.py
++++ b/trellis2/pipelines/trellis2_image_to_3d.py
+@@ -1,3 +1,4 @@
++import os
+ from typing import *
+ import torch
+ import torch.nn as nn
+@@ -101,6 +102,9 @@ class Trellis2ImageTo3DPipeline(Pipeline):
+         pipeline.shape_slat_normalization = args['shape_slat_normalization']
+         pipeline.tex_slat_normalization = args['tex_slat_normalization']
+ 
++        # Local override: allow loading DINOv3 from a mirror while gated access is pending
++        if os.environ.get('DINOV3_MODEL'):
++            args['image_cond_model']['args']['model_name'] = os.environ['DINOV3_MODEL']
+         pipeline.image_cond_model = getattr(image_feature_extractor, args['image_cond_model']['name'])(**args['image_cond_model']['args'])
+         pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])
+         
+diff --git a/trellis2/pipelines/trellis2_texturing.py b/trellis2/pipelines/trellis2_texturing.py
+index c184b5e..35dfae9 100755
+--- a/trellis2/pipelines/trellis2_texturing.py
++++ b/trellis2/pipelines/trellis2_texturing.py
+@@ -1,3 +1,4 @@
++import os
+ from typing import *
+ import torch
+ import torch.nn as nn
+@@ -82,6 +83,9 @@ class Trellis2TexturingPipeline(Pipeline):
+         pipeline.shape_slat_normalization = args['shape_slat_normalization']
+         pipeline.tex_slat_normalization = args['tex_slat_normalization']
+ 
++        # Local override: allow loading DINOv3 from a mirror while gated access is pending
++        if os.environ.get('DINOV3_MODEL'):
++            args['image_cond_model']['args']['model_name'] = os.environ['DINOV3_MODEL']
+         pipeline.image_cond_model = getattr(image_feature_extractor, args['image_cond_model']['name'])(**args['image_cond_model']['args'])
+         pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])
+ 

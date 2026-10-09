@@ -25,6 +25,30 @@ The official `setup.sh` installs PyTorch 2.6 + CUDA 12.4 and a prebuilt flash-at
    sudo apt install -y git python3-venv python3-dev build-essential
    ```
 5. About 40 GB of free disk space: ~22 GB of model weights plus the Python environment.
+6. **64 GB of system RAM** and the WSL memory settings below. One TRELLIS.2 process uses 17–35 GB of RAM in WSL.
+
+## WSL memory settings (important)
+
+With the WSL defaults, or with WSL given almost all RAM and no swap, TRELLIS.2 can take **the whole of WSL down**. You're dropped back to PowerShell, and sometimes WSL refuses to start again (`Wsl/Service/E_UNEXPECTED`) until Windows is restarted.
+
+What happens: the TRELLIS.2 process grows to 32–54 GB of RAM (it keeps model copies in RAM between stages, and a 1536 generation builds meshes with 10–20 million triangles). Linux's out-of-memory killer then kills it inside WSL's own `init.scope`, and WSL shuts down about a minute later.
+
+Two fixes, both needed:
+
+1. **`C:\Users\<you>\.wslconfig`.** Leave Windows some RAM and turn swap on (values for a 64 GB PC):
+   ```ini
+   [wsl2]
+   memory=40GB
+   swap=16GB
+   ```
+   Then run `wsl --shutdown` in PowerShell and start WSL again.
+2. **`run.sh` runs TRELLIS.2 in its own memory group** (`systemd-run --scope`, capped at 34 GB of RAM plus 12 GB of swap). If it goes over, only TRELLIS.2 is stopped, with a message, and WSL keeps running. Change the cap with `TRELLIS_MEM_MAX=30G ./run.sh`.
+
+If WSL still won't start (`E_UNEXPECTED`), try this in an **administrator** PowerShell before restarting the PC:
+```powershell
+wsl --shutdown
+Restart-Service WslService
+```
 
 ## Install
 
@@ -63,6 +87,57 @@ Log in on huggingface.co, open each link and request access. RMBG is usually app
 
 The first run downloads ~22 GB of weights into `~/.cache/huggingface`.
 
+Extras added by this repo:
+
+- **Turntable video:** in the web UI, **Extract GLB** also renders an MP4 (one full rotation at eye level, about 5 seconds), with a player and a **Download MP4** button. It adds about 30–60 seconds per export.
+- **Logs:** everything printed is saved to `~/TRELLIS.2/logs/run_<date_time>.log`, so error messages survive a closed terminal or a crash.
+- **Run one thing at a time.** Two TRELLIS.2 processes at once (for example the web UI plus a script) need more RAM than a 64 GB PC has.
+
+## Web UI settings explained
+
+Microsoft hasn't documented these. This is what they do according to the source code.
+
+TRELLIS.2 builds a model in three stages: **1. Sparse Structure** (a rough voxel sketch of the overall shape), **2. Shape** (detailed geometry) and **3. Material** (color, metal, roughness). Each stage starts from noise and removes it step by step. Each has the same four settings:
+
+| Setting | What it does |
+|---|---|
+| **Guidance Strength** | How hard the result is pushed toward your image rather than the model's "average guess". Higher follows the image more closely, but too high gives artifacts. **1 switches guidance off.** |
+| **Guidance Rescale** | Dampens the side effects of high Guidance Strength (over-contrast, spikes). 0 = none, 1 = full. |
+| **Sampling Steps** | Number of denoising steps. More is a little cleaner and slower. Above ~25 rarely helps. |
+| **Rescale T** | How the steps are spread out. Higher spends more steps on the coarse shape, lower more on fine detail. |
+
+Material (stage 3) defaults to Guidance Strength **1**, which means guidance is off for colors. In our tests, 3–5 (with Rescale 0.5–0.7) changed the result only slightly.
+
+Other settings:
+
+- **Resolution 512 / 1024 / 1536:** 1536 uses much more RAM (see above) and didn't improve faces in our tests. 1024 is a good default.
+- **Decimation Target:** the maximum triangle count in the exported GLB. TRELLIS.2 first builds 10–20 million triangles and reduces them to this number. For a game character, 30–80k is typical. The slider's minimum is 100k, so reduce further in a 3D tool.
+- **Texture Size:** the resolution of the exported textures (1024–4096).
+- **Seed:** with the same image and the same settings, the same seed gives the same result. Turn off *Randomize Seed* to keep a result you like.
+- **The preview is tilted:** the preview camera looks down from 20° above and is turned 16°. The model itself is upright.
+
+## Getting good results
+
+From many test runs (observations, not official guidance):
+
+- **Input size:** the image is scaled to at most 1024 px and cropped to a square around the object. A larger image adds nothing. The object should fill the frame.
+- **Background:** use a plain, dark or grey background with no floor, frame or cast shadow. A **PNG with transparency** is used as is, and background removal is skipped.
+- **Lighting:** even and frontal. Strong colored rim light (for example blue or purple) can make dark glossy materials such as leather come out grey and fully metallic.
+- **What works well:** creatures, props, sculptures, ornamented or painted figures, and stylized or painterly semi-realistic full-body characters (Pixar/Unreal look).
+- **What works poorly:** **photorealistic human faces.** They come out smeared or clay-like at every setting, and the official online demo does the same. Microsoft's model card says outputs reflect the training data, which probably contains few realistic humans. Flat 2D/cel-shaded drawings also come out crude, and they create about 50% more voxels, so they use more memory.
+- **Game characters:** use an A-pose with arms away from the body, empty hands, hair tied up or behind the shoulders, and flat feet. Loose hair and anything held in the hands fuse with the body, and stretch badly when the model is rigged (for example in Mixamo).
+- **It's a lottery:** results vary a lot between seeds. Generate several and keep the best.
+
+### Fixing false metal and grey colors
+
+If an export comes out too dark or "metallic", or with washed-out colors:
+
+```bash
+~/TRELLIS.2/run.sh fix_materials.py input.glb output.glb --saturation 2.0 --metal 0
+```
+
+It sets metallic to 0 and boosts color saturation (in CIELAB, so hue and brightness are kept). It can't bring back colors the model removed completely.
+
 ## What's different from upstream
 
 | Problem | Fix |
@@ -75,15 +150,19 @@ The first run downloads ~22 GB of weights into `~/.cache/huggingface`.
 | `'DINOv3ViTModel' object has no attribute 'layer'` | patch for transformers ≥ 5 (layers moved to `model.model.layer`) |
 | Hugging Face downloads stall at 0 bytes | `HF_HUB_DISABLE_XET=1` |
 | `GatedRepoError` | request access to the models above |
+| WSL shuts down during generation (dropped to PowerShell) | `.wslconfig` memory/swap and the memory cap in `run.sh` (see *WSL memory settings*) |
+| `CUDA driver error: device not ready` / `Failed to create GPU mapping` | keep `TRELLIS_LOW_VRAM=1` (the default in `run.sh`). Keeping all models on the GPU overflows 32 GB of VRAM during the preview |
+| RAM grows with every generation in the web UI | `MALLOC_ARENA_MAX=2` in `run.sh` |
 
-All source changes are in [`patches/trellis2-blackwell.patch`](patches/trellis2-blackwell.patch). Every dependency is pinned to the commit that was tested.
+All source changes (including the MP4 export and the `TRELLIS_LOW_VRAM` / `DINOV3_MODEL` overrides) are in [`patches/trellis2-blackwell.patch`](patches/trellis2-blackwell.patch). Every dependency is pinned to the commit that was tested.
 
 ## Troubleshooting
 
 - **`nvcc` / CUDA 13 not found:** install the WSL-Ubuntu CUDA toolkit (see prerequisites) or `export CUDA_HOME=/usr/local/cuda-13.x`.
 - **A single extension fails to build:** the build output is printed. Re-run `./install.sh`, which is safe to repeat.
 - **Out of memory on cards with less than 32 GB:** TRELLIS.2 needs ≥ 24 GB of VRAM. Close other GPU apps.
+- **Something crashed and the terminal is gone:** read the newest file in `~/TRELLIS.2/logs/`, and `journalctl -b -1 | grep -i "out of memory"` for crashes that took WSL down.
 
 ## Credits and licenses
 
-The scripts in this repo are MIT licensed. TRELLIS.2 is © Microsoft (MIT). nvdiffrast and nvdiffrec are under NVIDIA's own licenses. DINOv3 and RMBG-2.0 are under their own licenses, so check them before any commercial use. This repo contains no model weights or third-party code, only an installer and a small patch.
+The scripts in this repo are MIT licensed. TRELLIS.2 is © Microsoft (MIT). nvdiffrast and nvdiffrec are under NVIDIA's own licenses. DINOv3 and RMBG-2.0 are under their own licenses, so check them before any commercial use. This repo contains no model weights or third-party code, only an installer, a launcher, a small patch and a material-fix tool.

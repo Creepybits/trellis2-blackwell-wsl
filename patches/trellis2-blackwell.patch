@@ -1,3 +1,67 @@
+diff --git a/app.py b/app.py
+index 74b882b..b4522de 100644
+--- a/app.py
++++ b/app.py
+@@ -12,6 +12,7 @@ import numpy as np
+ from PIL import Image
+ import base64
+ import io
++import imageio
+ from trellis2.modules.sparse import SparseTensor
+ from trellis2.pipelines import Trellis2ImageTo3DPipeline
+ from trellis2.renderers import EnvMap
+@@ -475,9 +476,9 @@ def extract_glb(
+     texture_size: int,
+     req: gr.Request,
+     progress=gr.Progress(track_tqdm=True),
+-) -> Tuple[str, str]:
++) -> Tuple[str, str, str, str]:
+     """
+-    Extract a GLB file from the 3D model.
++    Extract a GLB file (and a turntable MP4) from the 3D model.
+ 
+     Args:
+         state (dict): The state of the generated 3D model.
+@@ -510,8 +511,20 @@ def extract_glb(
+     os.makedirs(user_dir, exist_ok=True)
+     glb_path = os.path.join(user_dir, f'sample_{timestamp}.glb')
+     glb.export(glb_path, extension_webp=True)
++    del glb
+     torch.cuda.empty_cache()
+-    return glb_path, glb_path
++
++    # Turntable video: one full rotation at eye level, saved next to the GLB
++    mesh.simplify(16777216)  # nvdiffrast limit
++    yaws = (-np.linspace(0, 2 * np.pi, 120, endpoint=False) - np.pi).tolist()  # starts facing the camera
++    extrinsics, intrinsics = render_utils.yaw_pitch_r_fov_to_extrinsics_intrinsics(yaws, [0.1] * len(yaws), 2, 36)
++    frames = render_utils.render_frames(mesh, extrinsics, intrinsics, {'resolution': 1024, 'bg_color': (0, 0, 0)},
++                                        envmap={'courtyard': envmap['courtyard']})['shaded_courtyard']
++    video_path = os.path.join(user_dir, f'sample_{timestamp}.mp4')
++    imageio.mimsave(video_path, frames, fps=24, quality=9)
++    del mesh, frames
++    torch.cuda.empty_cache()
++    return glb_path, glb_path, video_path, video_path
+ 
+ 
+ with gr.Blocks(delete_cache=(600, 600)) as demo:
+@@ -561,6 +574,8 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
+                 with gr.Step("Extract", id=1):
+                     glb_output = gr.Model3D(label="Extracted GLB", height=724, show_label=True, display_mode="solid", clear_color=(0.25, 0.25, 0.25, 1.0))
+                     download_btn = gr.DownloadButton(label="Download GLB")
++                    video_output = gr.Video(label="Turntable video", autoplay=True, loop=True)
++                    video_download_btn = gr.DownloadButton(label="Download MP4")
+                     
+         with gr.Column(scale=1, min_width=172):
+             examples = gr.Examples(
+@@ -610,7 +625,7 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
+     ).then(
+         extract_glb,
+         inputs=[output_buf, decimation_target, texture_size],
+-        outputs=[glb_output, download_btn],
++        outputs=[glb_output, download_btn, video_output, video_download_btn],
+     )
+         
+ 
 diff --git a/trellis2/modules/image_feature_extractor.py b/trellis2/modules/image_feature_extractor.py
 index c3cb515..12a65d3 100644
 --- a/trellis2/modules/image_feature_extractor.py
@@ -14,7 +78,7 @@ index c3cb515..12a65d3 100644
                  hidden_states,
                  position_embeddings=position_embeddings,
 diff --git a/trellis2/pipelines/trellis2_image_to_3d.py b/trellis2/pipelines/trellis2_image_to_3d.py
-index a7b84b9..c4ca787 100644
+index a7b84b9..0187934 100644
 --- a/trellis2/pipelines/trellis2_image_to_3d.py
 +++ b/trellis2/pipelines/trellis2_image_to_3d.py
 @@ -1,3 +1,4 @@
@@ -22,7 +86,7 @@ index a7b84b9..c4ca787 100644
  from typing import *
  import torch
  import torch.nn as nn
-@@ -101,6 +102,9 @@ class Trellis2ImageTo3DPipeline(Pipeline):
+@@ -101,10 +102,16 @@ class Trellis2ImageTo3DPipeline(Pipeline):
          pipeline.shape_slat_normalization = args['shape_slat_normalization']
          pipeline.tex_slat_normalization = args['tex_slat_normalization']
  
@@ -32,6 +96,13 @@ index a7b84b9..c4ca787 100644
          pipeline.image_cond_model = getattr(image_feature_extractor, args['image_cond_model']['name'])(**args['image_cond_model']['args'])
          pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])
          
+         pipeline.low_vram = args.get('low_vram', True)
++        # Local override: keep all models on the GPU (32 GB cards) instead of copies in system RAM
++        if os.environ.get('TRELLIS_LOW_VRAM') is not None:
++            pipeline.low_vram = os.environ['TRELLIS_LOW_VRAM'] == '1'
+         pipeline.default_pipeline_type = args.get('default_pipeline_type', '1024_cascade')
+         pipeline.pbr_attr_layout = {
+             'base_color': slice(0, 3),
 diff --git a/trellis2/pipelines/trellis2_texturing.py b/trellis2/pipelines/trellis2_texturing.py
 index c184b5e..35dfae9 100755
 --- a/trellis2/pipelines/trellis2_texturing.py

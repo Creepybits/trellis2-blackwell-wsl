@@ -67,6 +67,7 @@ else
     die "Patch does not apply cleanly. Is $INSTALL_DIR modified?"
 fi
 cp "$REPO_DIR/run.sh" "$INSTALL_DIR/run.sh"
+cp "$REPO_DIR/tools/fix_materials.py" "$INSTALL_DIR/fix_materials.py"
 chmod +x "$INSTALL_DIR/run.sh"
 
 # ---------------------------------------------------------------- python env

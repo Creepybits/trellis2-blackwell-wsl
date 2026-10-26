@@ -68,6 +68,7 @@ else
 fi
 cp "$REPO_DIR/run.sh" "$INSTALL_DIR/run.sh"
 cp "$REPO_DIR/tools/fix_materials.py" "$INSTALL_DIR/fix_materials.py"
+cp "$REPO_DIR/tools/glb_to_mixamo.py" "$INSTALL_DIR/glb_to_mixamo.py"
 chmod +x "$INSTALL_DIR/run.sh"
 
 # ---------------------------------------------------------------- python env
